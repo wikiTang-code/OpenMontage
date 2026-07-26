@@ -30,6 +30,8 @@ class LLMConfig(BaseModel):
     model: Optional[str] = None
     temperature: float = 0.7
     max_tokens: int = 4096
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 class BudgetConfig(BaseModel):
@@ -78,7 +80,7 @@ class OpenMontageConfig(BaseModel):
             config_path = Path(__file__).resolve().parent.parent / "config.yaml"
 
         if config_path.exists():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
             return cls.model_validate(raw)
 

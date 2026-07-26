@@ -11,7 +11,7 @@
     "description": { "type": "string" },
     "category": {
       "type": "string",
-      "enum": ["talking_head", "generated", "hybrid", "screen_recording", "animation", "cinematic", "custom"]
+      "enum": ["talking_head", "generated", "hybrid", "screen_recording", "animation", "cinematic", "documentary", "custom"]
     },
     "stability": {
       "type": "string",
@@ -155,6 +155,24 @@
         "custom_tools": { "type": "boolean", "default": false }
       },
       "additionalProperties": false
+    },
+    "production_modes": {
+      "type": "array",
+      "description": "Alternative production modes the pipeline supports (e.g., real capture vs synthetic terminal)",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "required_tools": { "type": "array", "items": { "type": "string" } },
+          "optional_tools": { "type": "array", "items": { "type": "string" } },
+          "scene_type": { "type": "string" },
+          "agent_skills": { "type": "array", "items": { "type": "string" } },
+          "best_for": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

@@ -2,6 +2,46 @@
 
 from __future__ import annotations
 
+# ==========================================
+# ROCm infer_schema Monkey Patch for PyTorch
+# ==========================================
+try:
+    import sys
+    from types import ModuleType
+    # 动态伪造 PyTorch 2.5+ 的 flex_attention 实验模块以适配 PyTorch 2.4 运行环境
+    flex_mod = ModuleType("torch.nn.attention.flex_attention")
+    flex_mod.BlockMask = object
+    flex_mod.create_block_mask = lambda *args, **kwargs: None
+    sys.modules["torch.nn.attention.flex_attention"] = flex_mod
+
+    import torch
+    import typing
+    import torch._library.infer_schema as infer_schema_mod
+    original_infer_schema = infer_schema_mod.infer_schema
+
+    def patched_infer_schema(prototype_function, mutates_args=()):
+        if hasattr(prototype_function, "__annotations__"):
+            annotations = prototype_function.__annotations__
+            for k, v in list(annotations.items()):
+                if isinstance(v, str):
+                    try:
+                        # 确保 globals 拥有必要引用来 eval 类型字符串
+                        fn_globals = prototype_function.__globals__.copy()
+                        fn_globals['torch'] = torch
+                        fn_globals['typing'] = typing
+                        fn_globals['Tensor'] = torch.Tensor
+                        resolved = eval(v, fn_globals)
+                        # 将字符串还原为实际的 Python 类型类
+                        annotations[k] = resolved
+                    except Exception:
+                        pass
+        return original_infer_schema(prototype_function, mutates_args)
+
+    infer_schema_mod.infer_schema = patched_infer_schema
+except Exception:
+    pass
+# ==========================================
+
 import os
 import shutil
 import subprocess
@@ -151,20 +191,33 @@ def get_torch_device() -> str:
     """Return best available torch device: cuda > mps (Apple Silicon Metal) > cpu.
 
     Priority order:
-      1. cuda  — NVIDIA GPU (fastest for most diffusion models)
-      2. mps   — Apple Silicon Metal (M1/M2/M3/M4/M5, macOS >= 12.3)
-      3. cpu   — fallback, always available but slow
-
-    MPS detection is guarded for torch builds that lack ``torch.backends.mps``
-    (e.g. older pip wheels or Linux builds).  We check both build-time support
-    (``is_built()``) and runtime availability (``is_available()``).
+      0. TORCH_DEVICE environment variable (if specified)
+      1. cuda  — NVIDIA GPU (or AMD GPU under WSL2/ROCm)
+      2. directml — AMD GPU on native Windows (via torch_directml)
+      3. mps   — Apple Silicon Metal (M1/M2/M3/M4/M5, macOS >= 12.3)
+      4. cpu   — fallback, always available but slow
     """
+    # 优先支持手动指定设备环境变量
+    device_env = os.environ.get("TORCH_DEVICE")
+    if device_env:
+        return device_env
+
     try:
         import torch as _torch  # noqa: PLC0415
     except ImportError:
         return "cpu"
+
     if _torch.cuda.is_available():
         return "cuda"
+
+    # 检测 Windows 下的 AMD 显卡 DirectML 设备
+    try:
+        import torch_directml  # noqa: PLC0415
+        if torch_directml.is_available():
+            return "privateuseone:0"
+    except ImportError:
+        pass
+
     # Guard: torch.backends.mps may not exist on older/non-macOS builds
     try:
         mps_backend = getattr(_torch, "backends", None)
@@ -228,7 +281,7 @@ def estimate_local_runtime(speed: str) -> float:
     return {"fast": 120.0, "medium": 240.0, "slow": 600.0}.get(speed, 240.0)
 
 
-def load_diffusers_pipeline(pipeline_class: str, model_id: str, enable_offload: bool):
+def load_diffusers_pipeline(pipeline_class: str, model_id: str, enable_offload: bool, quantization: str | None = None):
     import diffusers
     import torch
 
@@ -244,17 +297,37 @@ def load_diffusers_pipeline(pipeline_class: str, model_id: str, enable_offload: 
     device = get_torch_device()
     # bfloat16 is only reliable on CUDA; MPS uses float16 for inference,
     # CPU must use float32 (float16 is emulated and unreliable on CPU)
-    if device == "cuda" and torch.cuda.is_bf16_supported():
+    if (device == "cuda" or device.startswith("cuda")) and torch.cuda.is_bf16_supported():
         dtype = torch.bfloat16
     elif device == "cpu":
         dtype = torch.float32
     else:
         dtype = torch.float16
 
-    pipeline = pipeline_class_obj.from_pretrained(model_id, torch_dtype=dtype)
+    kwargs = {}
+    # 支持 8bit/4bit bitsandbytes 载入，以降低 20GB 及以下 VRAM 卡运行 14B 模型的压力
+    if quantization in ("int8", "int4") and ("cuda" in device or device.startswith("cuda")):
+        try:
+            import bitsandbytes  # noqa: F401
+            if quantization == "int8":
+                kwargs["load_in_8bit"] = True
+            else:
+                kwargs["load_in_4bit"] = True
+        except ImportError:
+            # 允许继续加载，但记录错误或继续回退
+            pass
+
+    # 支持 FP8 加载 (当显卡/Torch支持时优先使用原生精度)
+    if quantization == "fp8":
+        if hasattr(torch, "float8_e4m3fn"):
+            dtype = torch.float8_e4m3fn
+        else:
+            dtype = torch.float16
+
+    pipeline = pipeline_class_obj.from_pretrained(model_id, torch_dtype=dtype, **kwargs)
 
     if enable_offload:
-        if device == "cuda":
+        if "cuda" in device or device.startswith("cuda"):
             pipeline.enable_model_cpu_offload()
         else:
             # enable_model_cpu_offload() is CUDA-only; fall back to direct device placement
@@ -331,31 +404,69 @@ def generate_local_video(
     num_frames = inputs.get("num_frames", meta["default_num_frames"])
     fps = meta["fps"]
     model_id = meta.get("hf_i2v_id") if operation == "image_to_video" and meta.get("hf_i2v_id") else meta["hf_id"]
-    pipeline = load_diffusers_pipeline(meta["pipeline_class"], model_id, enable_offload)
+    
+    quantization = os.environ.get("VIDEO_GEN_QUANTIZATION") or inputs.get("quantization")
+    
+    # 尝试引入 GPU 互斥锁包装本地渲染，防止与宿主机 LM Studio/微信网桥发生显存冲突
+    gpu_lock_ctx = None
+    gpu_lock_enabled = os.environ.get("GPU_LOCK_ENABLED", "true").lower() in ("true", "1")
+    if gpu_lock_enabled:
+        import sys
+        # Resolve gpu_lock_helper via GPU_LOCK_HELPER_PATH env var or project root.
+        # Supports both Windows native and WSL2 environments.
+        _gpu_lock_path = os.environ.get("GPU_LOCK_HELPER_PATH")
+        if _gpu_lock_path:
+            sys.path.append(_gpu_lock_path)
+        else:
+            # Default: project root (where gpu_lock_helper.py lives)
+            _project_root = str(Path(__file__).resolve().parent.parent.parent)
+            if _project_root not in sys.path:
+                sys.path.append(_project_root)
+        try:
+            from gpu_lock_helper import GPULock
+            gpu_lock_url = os.environ.get("GPU_LOCK_URL", "http://127.0.0.1:8085")
+            gpu_lock_ctx = GPULock(server_url=gpu_lock_url, owner="openmontage")
+        except Exception as e:
+            print(f"[Warning] 无法加载 GPU 调度锁，将直接运行渲染: {e}")
+            gpu_lock_ctx = None
 
-    generation_args: dict[str, Any] = {
-        "prompt": prompt,
-        "num_frames": num_frames,
-        "width": width,
-        "height": height,
-        "num_inference_steps": inputs.get("num_inference_steps", 30),
-    }
-    if seed is not None:
-        generation_args["generator"] = torch.Generator(device="cpu").manual_seed(seed)
-    if operation == "image_to_video":
-        image = load_reference_image(inputs, width, height)
-        if isinstance(image, ToolResult):
-            return image
-        generation_args["image"] = image
-    if meta["pipeline_class"] == "CogVideoXPipeline":
-        generation_args["negative_prompt"] = "worst quality, low quality, blurry, distorted, watermark"
+    def run_generation():
+        pipeline = load_diffusers_pipeline(meta["pipeline_class"], model_id, enable_offload, quantization=quantization)
+        generation_args: dict[str, Any] = {
+            "prompt": prompt,
+            "num_frames": num_frames,
+            "width": width,
+            "height": height,
+            "num_inference_steps": inputs.get("num_inference_steps", 30),
+        }
+        if seed is not None:
+            generation_args["generator"] = torch.Generator(device="cpu").manual_seed(seed)
+        if operation == "image_to_video":
+            image = load_reference_image(inputs, width, height)
+            if isinstance(image, ToolResult):
+                return image
+            generation_args["image"] = image
+        if meta["pipeline_class"] == "CogVideoXPipeline":
+            generation_args["negative_prompt"] = "worst quality, low quality, blurry, distorted, watermark"
 
-    output = pipeline(**generation_args)
-    frames = output.frames[0] if hasattr(output, "frames") else output.images
+        output = pipeline(**generation_args)
+        frames = output.frames[0] if hasattr(output, "frames") else output.images
 
-    output_path = Path(inputs.get("output_path", f"{tool_name}_{variant}.mp4"))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    export_to_video(frames, str(output_path), fps=fps)
+        output_path = Path(inputs.get("output_path", f"{tool_name}_{variant}.mp4"))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        export_to_video(frames, str(output_path), fps=fps)
+        return output_path
+
+    # 执行带有显存互斥调度的渲染
+    if gpu_lock_ctx:
+        with gpu_lock_ctx:
+            res = run_generation()
+    else:
+        res = run_generation()
+
+    if isinstance(res, ToolResult):
+        return res
+    output_path = res
 
     return ToolResult(
         success=True,
@@ -372,6 +483,7 @@ def generate_local_video(
             "fps": fps,
             "duration_seconds": round(num_frames / fps, 2),
             "operation": operation,
+            "quantization": quantization,
             "output": str(output_path),
             "format": "mp4",
             "license": meta["license"],

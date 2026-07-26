@@ -40,10 +40,10 @@ class GoogleTTS(BaseTool):
 
     dependencies = []
     install_instructions = (
-        "Auth option A — API key: set GOOGLE_API_KEY (or GEMINI_API_KEY) to a\n"
-        "  Google Cloud API key with Text-to-Speech enabled.\n"
+        "Auth option A -- API key: set GOOGLE_API_KEY to a Google Cloud API key\n"
+        "  with Text-to-Speech enabled (NOT a Gemini/AI Studio key).\n"
         "  Enable the API at https://console.cloud.google.com/apis/library/texttospeech.googleapis.com\n"
-        "Auth option B — service account: set GOOGLE_APPLICATION_CREDENTIALS to the\n"
+        "Auth option B -- service account: set GOOGLE_APPLICATION_CREDENTIALS to the\n"
         "  path of a service-account JSON key (needs the 'google-auth' package)."
     )
     fallback = "openai_tts"
@@ -130,7 +130,12 @@ class GoogleTTS(BaseTool):
     }
 
     def _get_api_key(self) -> str | None:
-        return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        # Cloud TTS requires a Google Cloud API key with the Text-to-Speech
+        # API enabled.  GEMINI_API_KEY is an AI Studio key that only works
+        # with the generativelanguage.googleapis.com endpoints — it will
+        # produce a 401 on texttospeech.googleapis.com.  Do NOT fall back to
+        # it here; the service-account path handles non-API-key auth instead.
+        return os.environ.get("GOOGLE_API_KEY")
 
     def get_status(self) -> ToolStatus:
         # Available via either an API key or a service-account JSON. Both paths

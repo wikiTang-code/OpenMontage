@@ -257,7 +257,14 @@ class GoogleImagen(BaseTool):
             output_path.write_bytes(image_bytes)
 
         except Exception as e:
-            return ToolResult(success=False, error=f"Imagen generation failed: {e}")
+            err_msg = str(e)
+            # Provide actionable hint for common 404 (billing not enabled)
+            if "404" in err_msg and "generativelanguage.googleapis.com" in err_msg:
+                err_msg += (
+                    " -- Imagen is a paid-only feature. Ensure your API key has "
+                    "billing enabled in Google AI Studio (https://aistudio.google.com/apikey)."
+                )
+            return ToolResult(success=False, error=f"Imagen generation failed: {err_msg}")
 
         return ToolResult(
             success=True,
