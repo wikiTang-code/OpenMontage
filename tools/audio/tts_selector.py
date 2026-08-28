@@ -141,6 +141,21 @@ class TTSSelector(BaseTool):
             return ToolResult(success=False, error="No TTS provider available.")
 
         result = tool.execute(inputs)
+        
+        # If the preferred tool fails, try fallback tools automatically
+        if not result.success:
+            from tools.tool_registry import registry
+            fallback_tool = registry.find_fallback(tool.name)
+            if fallback_tool:
+                print(f"[Selector] Preferred tool {tool.name} failed. Attempting fallback to {fallback_tool.name}...")
+                result = fallback_tool.execute(inputs)
+                if result.success:
+                    result.data.setdefault("selected_tool", fallback_tool.name)
+                    result.data["selected_provider"] = fallback_tool.provider
+                    result.data["selection_reason"] = f"Fallback from {tool.name} due to failure. Selected {fallback_tool.provider}"
+                    result.data.update(self._tool_context_payload(fallback_tool))
+                    return result
+
         if result.success:
             result.data.setdefault("selected_tool", tool.name)
             result.data["selected_provider"] = tool.provider

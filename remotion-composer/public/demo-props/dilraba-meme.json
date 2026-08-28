@@ -1,0 +1,83 @@
+{
+  "title": "Dilraba Kim-Manager Smile",
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "theme": {
+    "background": "#1a1a2e",
+    "accent": "#e94560",
+    "text": "#ffffff",
+    "fontFamily": "Noto Sans SC, sans-serif"
+  },
+  "audio": {
+    "music": {
+      "src": "",
+      "volume": 0.1,
+      "fadeInSeconds": 0.5,
+      "fadeOutSeconds": 1
+    }
+  },
+  "cuts": [
+    {
+      "type": "anime_scene",
+      "images": ["dilraba-meme/dilraba_smile_01.jpg"],
+      "animation": "zoom-in",
+      "particles": "sparkles",
+      "particleColor": "#FFD700",
+      "particleCount": 40,
+      "particleIntensity": 0.7,
+      "vignette": true,
+      "lightingFrom": "top-right",
+      "lightingTo": "bottom-left",
+      "in_seconds": 0,
+      "out_seconds": 3
+    },
+    {
+      "type": "anime_scene",
+      "images": ["dilraba-meme/dilraba_smile_02.jpg"],
+      "animation": "ken-burns",
+      "particles": "fireflies",
+      "particleColor": "#FFD700",
+      "particleCount": 30,
+      "particleIntensity": 0.6,
+      "vignette": true,
+      "lightingFrom": "top-left",
+      "lightingTo": "bottom-right",
+      "in_seconds": 3,
+      "out_seconds": 6
+    },
+    {
+      "type": "anime_scene",
+      "images": ["dilraba-meme/kim_manager_meme.png"],
+      "animation": "zoom-out",
+      "particles": "sparkles",
+      "particleColor": "#FF6B6B",
+      "particleCount": 50,
+      "particleIntensity": 0.9,
+      "vignette": false,
+      "in_seconds": 6,
+      "out_seconds": 9
+    },
+    {
+      "type": "anime_scene",
+      "images": ["dilraba-meme/kim_manager_laugh.png"],
+      "animation": "zoom-in",
+      "particles": "fireflies",
+      "particleColor": "#FFD700",
+      "particleCount": 40,
+      "particleIntensity": 0.8,
+      "vignette": true,
+      "in_seconds": 9,
+      "out_seconds": 12
+    },
+    {
+      "type": "text_card",
+      "text": "金馆长式微笑",
+      "fontSize": 72,
+      "color": "#FFD700",
+      "backgroundVideo": "",
+      "in_seconds": 12,
+      "out_seconds": 14
+    }
+  ]
+}
